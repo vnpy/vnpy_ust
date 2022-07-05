@@ -304,7 +304,7 @@ class UstTdApi(TdApi):
 
         symbol: str = data["StockCode"]
         timestamp: str = f"{data['TradingDay']} {data['OrderTime']}"
-        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H%M%S")
+        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H%M%S%f")
         dt: datetime = dt.replace(tzinfo=CHINA_TZ)
 
         order: OrderData = OrderData(
@@ -330,7 +330,7 @@ class UstTdApi(TdApi):
 
         symbol: str = data["StockCode"]
         timestamp: str = f"{data['TradingDay']} {data['TradeTime']}"
-        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H%M%S")
+        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H%M%S%f")
         dt: datetime = dt.replace(tzinfo=CHINA_TZ)
 
         trade: TradeData = TradeData(
