@@ -287,8 +287,8 @@ class UstTdApi(TdApi):
 
         account: AccountData = AccountData(
             accountid=self.accountid,
-            balance=data["AvailableBalance"],
-            frozen=data["AvailableBalance"] - data["CurrentBalance"],
+            balance=round(data["CurrentBalance"], 2),
+            frozen=round(data["CurrentBalance"] - data["AvailableBalance"], 2),
             gateway_name=self.gateway_name
         )
         self.gateway.on_account(account)
