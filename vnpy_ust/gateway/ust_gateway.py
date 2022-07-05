@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from pathlib import Path
 
 from vnpy.event import EventEngine
@@ -31,7 +31,8 @@ from ..api import (
     HS_EI_SSE,
     HS_EI_SZSE,
     HS_CT_Limit,
-    HS_CT_Market,
+    HS_CT_MarketFAK,
+    HS_CT_Market5FAK,
     HS_OD_Buy,
     HS_OD_Sell,
     HS_OS_NotReported,
@@ -77,11 +78,13 @@ DIRECTION_VT2UST: Dict[Direction, int] = {
 DIRECTION_UST2VT: Dict[int, Direction] = {v: k for k, v in DIRECTION_VT2UST.items()}
 
 # 委托类型映射
-ORDERTYPE_VT2UST: Dict[OrderType, int] = {
-    OrderType.LIMIT: HS_CT_Limit,
-    OrderType.MARKET: HS_CT_Market,
+ORDERTYPE_VT2UST: Dict[Tuple, int] = {
+    (Exchange.SSE, OrderType.LIMIT): HS_CT_Limit,
+    (Exchange.SZSE, OrderType.LIMIT): HS_CT_Limit,
+    (Exchange.SSE, OrderType.MARKET): HS_CT_Market5FAK,
+    (Exchange.SZSE, OrderType.MARKET): HS_CT_MarketFAK,
 }
-ORDERTYPE_UST2VT: Dict[int, OrderType] = {v: k for k, v in ORDERTYPE_VT2UST.items()}
+ORDERTYPE_UST2VT: Dict[int, Tuple] = {v: k for k, v in ORDERTYPE_VT2UST.items()}
 
 # 交易所映射
 EXCHANGE_UST2VT: Dict[str, Exchange] = {
@@ -102,13 +105,15 @@ class UstGateway(BaseGateway):
     default_name: str = "UST"
 
     default_setting: Dict[str, str] = {
-        "账号": "",
-        "密码": "",
+        "交易账号": "",
+        "交易密码": "",
         "交易服务器": "",
         "产品名称": "",
         "授权编码": "",
         "站点信息": "",
-        "投资者端应用信息": ""
+        "投资者端应用类别": "",
+        "行情账号": "",
+        "行情密码": ""
     }
 
     exchanges: List[str] = list(EXCHANGE_UST2VT.values())
@@ -122,22 +127,21 @@ class UstGateway(BaseGateway):
 
     def connect(self, setting: dict) -> None:
         """连接交易接口"""
-        accountid: str = setting["账号"]
-        password: str = setting["密码"]
+        td_accountid: str = setting["交易账号"]
+        td_password: str = setting["交易密码"]
         td_address: str = setting["交易服务器"]
         appid: str = setting["产品名称"]
         auth_code: str = setting["授权编码"]
         stationinfo: str = setting["站点信息"]
-        applicationtype: str = setting["投资者端应用信息"]
+        applicationtype: str = setting["投资者端应用类别"]
+        md_accountid: str = setting["行情账号"]
+        md_password: str = setting["行情密码"]
 
         if not td_address.startswith("fens://"):
             td_address = "fens://" + td_address
 
-        if not md_address.startswith("fens://"):
-            md_address = "fens://" + md_address
-
-        self.td_api.connect(td_address, accountid, password, auth_code, appid, stationinfo, applicationtype)
-        self.md_api.connect(accountid, password)
+        self.td_api.connect(td_address, td_accountid, td_password, auth_code, appid, stationinfo, applicationtype)
+        self.md_api.connect(md_accountid, md_password)
 
         self.init_query()
 
@@ -245,7 +249,6 @@ class UstTdApi(TdApi):
 
     def onRspOrderInsert(self, data: dict, error: dict, reqid: int, last: bool) -> None:
         """委托下单失败回报"""
-        print("onRspOrderInsert", "data:", data, "error:", error)
         if error["ErrorID"]:
             self.gateway.write_error("交易委托失败", error)
 
@@ -257,7 +260,7 @@ class UstTdApi(TdApi):
 
     def onRspQryHold(self, data: dict, error: dict, reqid: int, last: bool) -> None:
         """持仓查询回报"""
-        if not data:
+        if last:
             return
 
         symbol: str = data["StockCode"]
@@ -279,10 +282,13 @@ class UstTdApi(TdApi):
 
     def onRspQryFund(self, data: dict, error: dict, reqid: int, last: bool) -> None:
         """资金查询回报"""
+        if last:
+            return
+
         account: AccountData = AccountData(
             accountid=self.accountid,
-            balance=data["CurrentBalance"],
-            frozen=data["CurrentBalance"] - data["AvailableBalance"],
+            balance=data["AvailableBalance"],
+            frozen=data["AvailableBalance"] - data["CurrentBalance"],
             gateway_name=self.gateway_name
         )
         self.gateway.on_account(account)
@@ -292,20 +298,20 @@ class UstTdApi(TdApi):
         if not data["OrderRef"]:
             return
 
-        exchange: Exchange = EXCHANGE_UST2VT.get(data["ExchangeID"], None)
-        if not exchange:
+        exchange, type = ORDERTYPE_UST2VT.get(data["OrderCommand"], None)
+        if not exchange or not type:
             return
 
         symbol: str = data["StockCode"]
         timestamp: str = f"{data['TradingDay']} {data['OrderTime']}"
-        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H:%M:%S")
+        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H%M%S")
         dt: datetime = dt.replace(tzinfo=CHINA_TZ)
 
         order: OrderData = OrderData(
             symbol=symbol,
             exchange=exchange,
             orderid=data["OrderRef"],
-            type=ORDERTYPE_UST2VT[data["OrderCommand"]],
+            type=type,
             direction=DIRECTION_UST2VT[data["Direction"]],
             price=data["OrderPrice"],
             volume=data["OrderVolume"],
@@ -324,7 +330,7 @@ class UstTdApi(TdApi):
 
         symbol: str = data["StockCode"]
         timestamp: str = f"{data['TradingDay']} {data['TradeTime']}"
-        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H:%M:%S")
+        dt: datetime = datetime.strptime(timestamp, "%Y%m%d %H%M%S")
         dt: datetime = dt.replace(tzinfo=CHINA_TZ)
 
         trade: TradeData = TradeData(
@@ -366,7 +372,7 @@ class UstTdApi(TdApi):
             self.registerFensServer(address, self.accountid)
             self.registerSubModel(0)
         
-            res: int = self.init("", "", "", "", "")
+            res: int = self.init("")
             if not res:
                 self.authenticate()
             else:
@@ -400,7 +406,7 @@ class UstTdApi(TdApi):
 
     def send_order(self, req: OrderRequest) -> str:
         """委托下单"""
-        if req.type not in ORDERTYPE_VT2UST:
+        if req.type not in [OrderType.LIMIT, OrderType.MARKET]:
             self.gateway.write_log(f"当前接口不支持该类型的委托{req.type.value}")
             return ""
 
@@ -411,11 +417,12 @@ class UstTdApi(TdApi):
 
         self.order_ref += 1
         orderid: str = f"{self.sessionid}{self.order_ref}"
+        ordertype: str = ORDERTYPE_VT2UST[(req.exchange, req.type)]
 
         ust_req: dict = {
             "StockCode": req.symbol,
             "ExchangeID": exchange,
-	        "OrderCommand": ORDERTYPE_VT2UST[req.type],
+	        "OrderCommand": ordertype,
             "Direction": DIRECTION_VT2UST[req.direction],
             "OrderPrice": req.price,
             "OrderVolume": req.volume,
