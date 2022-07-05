@@ -125,6 +125,8 @@ class UstGateway(BaseGateway):
         self.td_api: "UstTdApi" = UstTdApi(self)
         self.md_api: "NsqMdApi" = NsqMdApi(self)
 
+        self.orders: Dict[str, OrderData] = {}
+
     def connect(self, setting: dict) -> None:
         """连接交易接口"""
         td_accountid: str = setting["交易账号"]
@@ -187,6 +189,15 @@ class UstGateway(BaseGateway):
         func = self.query_functions.pop(0)
         func()
         self.query_functions.append(func)
+
+    def on_order(self, order: OrderData) -> None:
+        """推送委托数据"""
+        self.orders[order.orderid] = order
+        super().on_order(order)
+
+    def get_order(self, orderid: str) -> OrderData:
+        """查询委托数据"""
+        return self.orders.get(orderid, None)
 
     def init_query(self) -> None:
         """初始化查询任务"""
@@ -252,6 +263,11 @@ class UstTdApi(TdApi):
         if error["ErrorID"]:
             self.gateway.write_error("交易委托失败", error)
 
+            order: OrderData = self.gateway.get_order(f"{str(data['SessionID']) + '_' + data['OrderRef']}")
+            if order:
+                order.status = Status.REJECTED
+                self.gateway.on_order(order)
+
     def onRspOrderAction(self, data: dict, error: dict, reqid: int, last: bool) -> None:
         """委托撤单失败回报"""
         print("onRspOrderAction", "data:", data, "error:", error)
@@ -310,7 +326,7 @@ class UstTdApi(TdApi):
         order: OrderData = OrderData(
             symbol=symbol,
             exchange=exchange,
-            orderid=data["OrderRef"],
+            orderid=str(data["SessionID"]) + "_" + data["OrderRef"],
             type=type,
             direction=DIRECTION_UST2VT[data["Direction"]],
             price=data["OrderPrice"],
@@ -325,7 +341,7 @@ class UstTdApi(TdApi):
     def onRtnTrade(self, data: dict) -> None:
         """成交数据推送"""
         exchange: Exchange = EXCHANGE_UST2VT.get(data["ExchangeID"], None)
-        if not exchange:
+        if not exchange or not data["OrderRef"]:
             return
 
         symbol: str = data["StockCode"]
@@ -336,7 +352,7 @@ class UstTdApi(TdApi):
         trade: TradeData = TradeData(
             symbol=symbol,
             exchange=exchange,
-            orderid=data["OrderRef"],
+            orderid=str(data["SessionID"]) + "_" + data["OrderRef"],
             tradeid=data["TradeID"],
             direction=DIRECTION_UST2VT[data["Direction"]],
             price=data["TradePrice"],
@@ -404,6 +420,17 @@ class UstTdApi(TdApi):
         self.reqid += 1
         self.reqUserLogin(ust_req, self.reqid)
 
+    def new_orderid(self) -> str:
+        """生成本地委托号"""
+        dt: datetime = datetime.now()
+        prefix: str = str(dt.hour * 3600 + dt.minute * 60 + dt.second)
+
+        self.order_ref += 1
+        suffix: str = str(self.order_ref).rjust(3, "0")
+
+        orderid: str = prefix + suffix
+        return orderid
+
     def send_order(self, req: OrderRequest) -> str:
         """委托下单"""
         if req.type not in [OrderType.LIMIT, OrderType.MARKET]:
@@ -415,8 +442,7 @@ class UstTdApi(TdApi):
             self.gateway.write_log(f"不支持的交易所{req.exchange.value}")
             return ""
 
-        self.order_ref += 1
-        orderid: str = f"{self.sessionid}{self.order_ref}"
+        orderid: str = self.new_orderid()
         ordertype: str = ORDERTYPE_VT2UST[(req.exchange, req.type)]
 
         ust_req: dict = {
@@ -437,16 +463,17 @@ class UstTdApi(TdApi):
             self.gateway.write_log(f"委托请求发送失败，原因：{msg}")
             return ""
 
-        order: OrderData = req.create_order_data(orderid, self.gateway_name)
+        order: OrderData = req.create_order_data(f"{self.sessionid}_{orderid}", self.gateway_name)
         self.gateway.on_order(order)
 
         return order.vt_orderid
 
     def cancel_order(self, req: CancelRequest) -> None:
         """委托撤单"""
+        sessionid, orderid = req.orderid.split("_")
         ust_req: dict = {
-            "OrderRef": req.orderid,
-            "SessionID": self.sessionid,
+            "OrderRef": orderid,
+            "SessionID": int(sessionid),
         }
 
         self.reqid += 1
