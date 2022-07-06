@@ -2466,12 +2466,12 @@ void TdApi::release()
 	this->api->ReleaseApi();
 };
 
-int TdApi::init(string licFile, string safeLevel, string pwd, string sslFile, string sslPwd)
+int TdApi::init(string licFile)
 {
 	this->active = true;
 	this->task_thread = thread(&TdApi::processTask, this);
 
-	int i = this->api->Init(licFile.c_str(), safeLevel.c_str(), pwd.c_str(), sslFile.c_str(), sslPwd.c_str());
+	int i = this->api->Init(licFile.c_str());
 	return i;
 
 };
@@ -2496,7 +2496,7 @@ int TdApi::exit()
 string TdApi::getApiErrorMsg(int errorCode)
 {
 	string i = this->api->GetApiErrorMsg(errorCode);
-	return i;
+	return toUtf(i);
 
 };
 
